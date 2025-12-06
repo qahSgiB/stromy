@@ -1,0 +1,12 @@
+
+all uniform
+
+X roll 0.75 1.2 # 13 14 // TODO: not symmetric
+X pitch 0.9 1.0 # 15 16
+X yaw 0.5 1.5 # 17 18
+
+X forward 0.8 1.2 # 11 12
+
+before forward
+    yaw, pitch +-0.07 / width # 19
+    my width is 2x
