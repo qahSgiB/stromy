@@ -756,7 +756,7 @@ impl Game {
         render_pass_qcyl.draw(self.tree_resolution as u32, 0..(count as u32));
 
         /* draw - leaves */
-        if self.show_leaves {
+        if self.show_leaves && self.leaves_radiuses_buffer.size() > 0 {
             render_pass_qcyl.set_qcyl_bind_group(&self.leaves_bindgroup);
     
             render_pass_qcyl.set_radiuses_vertex_buffer(self.leaves_radiuses_buffer.slice(..));
