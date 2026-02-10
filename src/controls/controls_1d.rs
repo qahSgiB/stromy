@@ -65,6 +65,7 @@ impl Controls1DBuiler {
             direction: None,
             pos: self.start_pos.unwrap_or(0.0),
             vel: 0.0,
+            manual_delta: 0.0,
         }
     }
 }
@@ -82,6 +83,7 @@ pub struct Controls1D {
     direction: Option<Direction>,
     pos: f32,
     vel: f32,
+    manual_delta: f32,
 }
 
 impl Controls1D {
@@ -95,6 +97,15 @@ impl Controls1D {
 
     pub fn get_vel(&self) -> f32 {
         self.vel
+    }
+
+    pub fn stop(&mut self) {
+        self.direction = None;
+        self.vel = 0.0;
+    }
+
+    pub fn manual_move(&mut self, delta: f32) {
+        self.manual_delta += delta;
     }
 
     pub fn flip_acc(&mut self) {
@@ -130,17 +141,23 @@ impl Controls1D {
 
         self.pos += self.vel * dt;
 
+        let did_update = self.vel != 0.0 || self.manual_delta != 0.0;
+
+        /* manual update */
+        self.pos += self.manual_delta;
+        self.manual_delta = 0.0;
+
         /* clamping */
-        if let Some(clamp_max) = self.clamp_max && self.pos >= clamp_max && self.vel > 0.0 {
-            self.pos = clamp_max;
-            self.vel = 0.0;
-            true
-        } else if let Some(clamp_min) = self.clamp_min && self.pos < clamp_min && self.vel < 0.0 {
-            self.pos = clamp_min;
-            self.vel = 0.0;
-            true
-        } else {
-            self.vel != 0.0
+        if did_update {
+            if let Some(clamp_max) = self.clamp_max && self.pos > clamp_max {
+                self.pos = clamp_max;
+                self.vel = 0.0;
+            } else if let Some(clamp_min) = self.clamp_min && self.pos < clamp_min {
+                self.pos = clamp_min;
+                self.vel = 0.0;
+            }
         }
+
+        did_update
     }
 }

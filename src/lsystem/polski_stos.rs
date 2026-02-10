@@ -144,7 +144,7 @@ impl PolskiStos {
         // So it would have to be evaluated.
         // Therefore -3th zeton cannot be operator and it muse be wartocs.
         //
-        // We can use same reasing to prove that zeton on -4th (and then -5th, -6th, ...) place must be wartocs.
+        // We can use same reasoning to prove that zeton on -4th (and then -5th, -6th, ...) place must be wartocs.
         let jakis_operator = self.stos.iter().rev().take(2).copied().any(PolskiZeton::jest_operator);
         if jakis_operator {
             return Err(PolskiStosBlad::DokonczMaOperator);

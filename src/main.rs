@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use winit::{application::ApplicationHandler, dpi::PhysicalSize, event::{ElementState, KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Fullscreen, Window, WindowId}};
+use winit::{application::ApplicationHandler, dpi::{PhysicalPosition, PhysicalSize}, event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent}, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Fullscreen, Window, WindowId}};
 
 use crate::game::*;
 
@@ -43,11 +43,11 @@ impl AppWgpu {
         let size = window.inner_size();
 
         /* init - instance, surface, adapter */
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        // let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        //     backends: wgpu::Backends::DX12,
-        //     ..wgpu::InstanceDescriptor::default()
-        // });
+        // let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::DX12,
+            ..wgpu::InstanceDescriptor::default()
+        });
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
@@ -170,6 +170,18 @@ impl AppWgpu {
         self.game.key_event(key, state);
     }
 
+    fn mouse_event(&mut self, button: MouseButton, state: ElementState) {
+        self.game.mouse_event(button, state);
+    }
+
+    fn mouse_moved_event(&mut self, position: PhysicalPosition<f64>) {
+        self.game.mouse_moved_event(position);
+    }
+
+    fn mouse_scroll_event(&mut self, delta: MouseScrollDelta) {
+        self.game.mouse_scroll_event(delta);
+    }
+
     fn render(&mut self) {
         /* timing */
         let now = Instant::now();
@@ -199,7 +211,7 @@ impl AppWgpu {
         self.egui_state.handle_platform_output(&self.window, egui_output.platform_output);
 
         /* update game */
-        self.game.update(&self.queue, t, dt, self.last_surface_texture_wait);
+        self.game.update(&self.device, &self.queue, t, dt, self.last_surface_texture_wait);
 
         /* surface texture */
         let surface_texture_start = Instant::now();
@@ -318,6 +330,15 @@ impl ApplicationHandler for AppRunner {
             WindowEvent::KeyboardInput { event: KeyEvent { physical_key: PhysicalKey::Code(key), state, .. }, .. } => {
                 app.key_event(key, state);
             },
+            WindowEvent::MouseInput { state, button, .. } => {
+                app.mouse_event(button, state);
+            },
+            WindowEvent::CursorMoved { position, .. } => {
+                app.mouse_moved_event(position);
+            },
+            WindowEvent::MouseWheel { delta, .. } => {
+                app.mouse_scroll_event(delta);
+            }
             _ => {},
         }
     }

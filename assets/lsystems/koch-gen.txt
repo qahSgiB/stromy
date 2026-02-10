@@ -1,0 +1,7 @@
+S 0 V 6.0 V 1.0 
+
+S 0 O / P 0 C 3 O / P 1 C 3 O / P 1 C 3 S 5 C 1 S 0 O / P 0 C 3 O / P 1 C 3 O / P 1 C 3 S 5 O ! C 2 S 0 O / P 0 C 3 O / P 1 C 3 O / P 1 C 3 S 5 C 1 S 0 O / P 0 C 3 O / P 1 C 3 O / P 1 C 3 
+
+0.1 0.1666 0.3333 3.0 
+
+F F [ ] P Y R 

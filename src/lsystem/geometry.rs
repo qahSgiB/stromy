@@ -137,7 +137,7 @@ fn string_iter_get_parameter(string_iter: &mut impl Iterator<Item = StringToken>
 }
 
 
-pub fn segments_to_models(segments: &[Segment]) -> Vec<M4> {
+pub fn segments_to_models_and_radiuses(segments: &[Segment]) -> (Vec<M4>, Vec<f32>) {
     segments
         .iter()
         .map(|segment| {
@@ -145,12 +145,16 @@ pub fn segments_to_models(segments: &[Segment]) -> Vec<M4> {
             let center = segment.pos + half_x;
 
             // rotation and translation in one
-            M4::new(
+            let model = M4::new(
                 half_x.x, segment.y.x, segment.z.x, center.x,
                 half_x.y, segment.y.y, segment.z.y, center.y,
                 half_x.z, segment.y.z, segment.z.z, center.z,
                 0.0     , 0.0        , 0.0        , 1.0     ,
-            )
+            );
+
+            let radius = segment.top_radius;
+
+            (model, radius)
         })
-        .collect()
+        .unzip()
 }

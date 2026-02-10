@@ -5,13 +5,17 @@ use nalgebra::RealField;
 
 use rand::distr::Distribution;
 
+use winit::dpi::PhysicalPosition;
 use winit::dpi::PhysicalSize;
 use winit::event::ElementState;
+use winit::event::MouseButton;
+use winit::event::MouseScrollDelta;
 use winit::keyboard::KeyCode;
 
 use crate::controls::*;
 use crate::lsystem;
 use crate::lsystem::geometry::Segment;
+use crate::lsystem::lsystem::LSystem;
 use crate::models::cube;
 use crate::rolling_average::RollingAvegare;
 use crate::wgpu_helpers;
@@ -19,6 +23,7 @@ use crate::wgpu_helpers::pipo30::{BindGroupLayoutManager, Instanced3dPipeline, I
 
 
 
+type V2 = na::Vector2<f32>;
 type V3 = na::Vector3<f32>;
 type V4 = na::Vector4<f32>;
 type M4 = na::Matrix4<f32>;
@@ -46,6 +51,13 @@ struct GameTimingStats {
 }
 
 pub struct Game {
+    /* l-system */
+    lsystem_file_path: String,
+    lsystem: LSystem,
+    lsystem_iterations: usize,
+    segments: Vec<Segment>,
+
+    /* high level wgpu */
     surface_manager: SurfaceManager,
     pipeline_3d: Instanced3dPipeline,
     pipeline_qcyl: InstancedQcylPipeline,
@@ -62,6 +74,8 @@ pub struct Game {
     projection_bindgroup: wgpu::BindGroup,
 
     /* tree (instanced qcyl) */
+    tree_color: V4,
+    tree_color_needs_update: bool,
     tree_resolution: usize,
     tree_resolution_needs_update: bool,
     tree_smooth_normals: bool,
@@ -76,7 +90,14 @@ pub struct Game {
     tree_bindgroup: wgpu::BindGroup,
 
     /* leaves (instanced qcyl) */
+    show_leaves: bool,
+
+    leaves_color: V4,
+    leaves_color_needs_update: bool,
     leaves_resolution: usize,
+    leaves_resolution_needs_update: bool,
+    leaves_smooth_normals: bool,
+    leaves_smooth_normals_needs_update: bool,
 
     leaves_model_buffer: wgpu::Buffer,
     leaves_model_it_buffer: wgpu::Buffer,
@@ -98,6 +119,12 @@ pub struct Game {
 
     /* controls */
     controls: Controls,
+    mouse_last_pos: V2,
+    mouse_is_pressed: bool,
+
+    to_reload_l_system: bool,
+    to_reload_tree: bool,
+    to_reload_leaves: bool,
 
     /* timing stats */
     timing_stats: GameTimingStats,
@@ -105,11 +132,19 @@ pub struct Game {
 
 impl Game {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat, surface_size: PhysicalSize<u32>, msaa_sample_counts: &[u32]) -> Game {
-        let segments = Game::init_l_system();
+        // let lsystem_file_path = "assets/lsystems/thesis_rand_tree_300.txt".to_string();
+        let lsystem_file_path = "assets/lsystems/smrek-novy-2-gen.txt".to_string();
+        let lsystem = Game::init_l_system(&lsystem_file_path);
 
-        let (tree_models, tree_radiuses, center) = Game::init_tree(&segments);
+        let lsystem_iterations = 7;
+        let segments = Game::init_segments(&lsystem, lsystem_iterations);
+
+        let (tree_models, tree_radiuses) = Game::init_tree(&segments);
 
         let (leaves_models, leaves_radiuses) = Game::init_leaves(&segments);
+
+        let center = segments_center(&segments);
+        let center = V3::new(0.0, center.y, 0.0);
 
         let controls = Game::init_controls(center);
 
@@ -128,28 +163,36 @@ impl Game {
         ) = Game::init_view_projection(device, &bind_group_layout_manager, surface_size, &controls);
 
         let (
-            tree_resolution,
-            tree_smooth_normals,
             tree_model_buffer,
             tree_model_it_buffer,
             tree_radiuses_buffer,
+        ) = Game::init_tree_wgpu(device, &tree_models, &tree_radiuses);
+        
+        let (
+            tree_color,
+            tree_resolution,
+            tree_smooth_normals,
             tree_color_buffer,
             tree_resolution_buffer,
             tree_smooth_normals_buffer,
             tree_bindgroup,
-        ) = Game::init_tree_wgpu(device, &bind_group_layout_manager, &tree_models, &tree_radiuses);
+        ) = Game::init_tree_params_wgpu(device, &bind_group_layout_manager);
 
         let (
-            leaves_resolution,
-            leaves_smooth_normals,
             leaves_model_buffer,
             leaves_model_it_buffer,
             leaves_radiuses_buffer,
+        ) = Game::init_leaves_wgpu(device, &leaves_models, &leaves_radiuses);
+        
+        let (
+            leaves_color,
+            leaves_resolution,
+            leaves_smooth_normals,
             leaves_color_buffer,
             leaves_resolution_buffer,
             leaves_smooth_normals_buffer,
             leaves_bindgroup,
-        ) = Game::init_leaves_wgpu(device, &bind_group_layout_manager, &leaves_models, &leaves_radiuses);
+        ) = Game::init_leaves_params_wgpu(device, &bind_group_layout_manager);
 
         let (
             orbit_cube_model_buffer,
@@ -166,7 +209,14 @@ impl Game {
             dt: RollingAvegare::new(),
         };
 
+        let mouse_last_pos = V2::new(0.0, 0.0);
+        let mouse_is_pressed = false;
+
         Game {
+            lsystem_file_path,
+            lsystem,
+            lsystem_iterations,
+            segments,
             surface_manager,
             pipeline_3d,
             pipeline_qcyl,
@@ -176,6 +226,8 @@ impl Game {
             projection_needs_update: false,
             projection_buffer,
             projection_bindgroup,
+            tree_color,
+            tree_color_needs_update: false,
             tree_resolution,
             tree_resolution_needs_update: false,
             tree_smooth_normals,
@@ -187,7 +239,13 @@ impl Game {
             tree_smooth_normals_buffer,
             tree_bindgroup,
             tree_radiuses_buffer,
+            show_leaves: true,
+            leaves_color,
+            leaves_color_needs_update: false,
             leaves_resolution,
+            leaves_resolution_needs_update: false,
+            leaves_smooth_normals,
+            leaves_smooth_normals_needs_update: false,
             leaves_model_buffer,
             leaves_model_it_buffer,
             leaves_radiuses_buffer,
@@ -202,35 +260,66 @@ impl Game {
             cube_vertices_buffer,
             cube_normals_buffer,
             controls,
+            mouse_last_pos,
+            mouse_is_pressed,
+            to_reload_l_system: false,
+            to_reload_tree: false,
+            to_reload_leaves: false,
             timing_stats,
         }
     }
 
-    fn init_l_system() -> Vec<Segment> {
-        let binary_tree = lsystem::lsystem::loader::load_from_file("assets/lsystems/thesis_rand_tree_300.txt").unwrap();
-        let segments = binary_tree.expand_to_geometry(7).unwrap();
+    fn reload_l_system(&mut self, device: &wgpu::Device) {
+        self.lsystem = Game::init_l_system(&self.lsystem_file_path);
+
+        self.reload_tree(device);
+    }
+
+    fn reload_tree(&mut self, device: &wgpu::Device) {
+        self.segments = Game::init_segments(&self.lsystem, self.lsystem_iterations);
+
+        let (tree_models, tree_radiuses) = Game::init_tree(&self.segments);
+
+        (
+            self.tree_model_buffer,
+            self.tree_model_it_buffer,
+            self.tree_radiuses_buffer,
+        ) = Game::init_tree_wgpu(device, &tree_models, &tree_radiuses);
+
+        self.reload_leaves(device);
+    }
+
+    fn reload_leaves(&mut self, device: &wgpu::Device) {
+        let (leaves_models, leaves_radiuses) = Game::init_leaves(&self.segments);
+
+        (
+            self.leaves_model_buffer,
+            self.leaves_model_it_buffer,
+            self.leaves_radiuses_buffer,
+        ) = Game::init_leaves_wgpu(device, &leaves_models, &leaves_radiuses);
+    }
+
+    fn init_l_system(lsystem_file_path: &str) -> LSystem {
+        lsystem::lsystem::loader::load_from_file(lsystem_file_path).unwrap()
+    }
+
+    fn init_segments(lsystem: &LSystem, lsystem_iterations: usize) -> Vec<Segment> {
+        let segments = lsystem.expand_to_geometry(lsystem_iterations).unwrap();
 
         println!("segments count: {}\n", segments.len());
 
         segments
     }
 
-    fn init_tree(segments: &[Segment]) -> (Vec<M4>, Vec<f32>, V3) {
-        let models = lsystem::geometry::segments_to_models(&segments);
-
-        let center = segments_center(&segments);
-        let center = V3::new(0.0, center.y, 0.0);
-
-        let radiuses = segments.iter().map(|segment| segment.top_radius).collect::<Vec<_>>();
-
-        (models, radiuses, center)
+    fn init_tree(segments: &[Segment]) -> (Vec<M4>, Vec<f32>) {
+        lsystem::geometry::segments_to_models_and_radiuses(&segments)
     }
 
     fn init_leaves(segments: &[Segment]) -> (Vec<M4>, Vec<f32>) {
         let offset_dist = rand::distr::Uniform::new(0.0, 1.0).unwrap(); // TODO: unwrap_unchecked
         let angle_dist = rand::distr::Uniform::new(0.0, 2.0 * f32::pi()).unwrap(); // TODO: unwrap_unchecked
 
-        // let width_mult_dist = rand_ ::Uniform::new(0.6, 1.4).unwrap(); // TODO: unwrap_unchecked
+        // let width_mult_dist = rand_distr::Uniform::new(0.6, 1.4).unwrap(); // TODO: unwrap_unchecked
         let width_mult_dist = rand_distr::Normal::new(1.0, 0.175).unwrap(); // TODO: unwrap_unchecked
 
         let count_var = 0.4; // 95%
@@ -244,10 +333,10 @@ impl Game {
                 let width = branch_width * 0.75;
                 let length = width * 35.0;
 
-                let spacing = width * 3.5;
+                let spacing = width * 1.5;
                 let count = branch_length / spacing;
 
-                let count_dist = rand_distr::Normal::new(count, count_var / 2.0).unwrap(); // TODO: unwrap_unchecked
+                let count_dist = rand_distr::Normal::new(count, count * count_var / 2.0).unwrap(); // TODO: unwrap_unchecked
 
                 let mut rng = rand::rng(); // TODO: move rng outwards
                 let count = count_dist.sample(&mut rng).round() as usize;
@@ -294,7 +383,8 @@ impl Game {
         let rotation_max_vel = f32::pi() * 2.0 / 3.0;
         let rotation_go_acc = rotation_max_vel * 3.0;
         let rotation_friction_acc = rotation_max_vel * 4.0;
-        let rotation_vertical_max_pos = f32::pi() / 2.0 * 5.0 / 6.0;
+        let rotation_vertical_max_pos = f32::pi() / 2.0 * 11.0 / 12.0;
+        let rotation_drag_vel = 0.004;
 
         let start_pos = center;
         let position_max_vel = 6.0;
@@ -307,12 +397,14 @@ impl Game {
         let orbit_radius_friction_acc = orbit_radius_max_vel * 12.0;
         let orbit_radius_min = 0.2;
         let orbit_radius_max = 6.0;
+        let orbit_radius_scroll_vel = 0.2;
 
         Controls::new(ControlsConfig {
             rotation_go_acc,
             rotation_friction_acc,
             rotation_max_vel,
             rotation_vertical_max_pos,
+            rotation_drag_vel,
             start_pos,
             position_go_acc,
             position_friction_acc,
@@ -323,11 +415,13 @@ impl Game {
             orbit_radius_max_vel,
             orbit_radius_min,
             orbit_radius_max,
+            orbit_radius_scroll_vel,
         })
     }
 
     fn init_surface_manager(device: &wgpu::Device, surface_size: PhysicalSize<u32>, surface_format: wgpu::TextureFormat, msaa_sample_counts: &[u32]) -> SurfaceManager {
-        let msaa_sample_count = msaa_sample_counts.last().map_or(1, |&msaa_sample_count| msaa_sample_count); // max msaa
+        // let msaa_sample_count = msaa_sample_counts.last().map_or(1, |&msaa_sample_count| msaa_sample_count); // max msaa
+        let msaa_sample_count = 4;
 
         SurfaceManager::new(device, surface_size, surface_format, msaa_sample_count)
     }
@@ -355,11 +449,21 @@ impl Game {
         (projection, view_buffer, projection_buffer, view_bindgroup, projection_bindgroup)
     }
 
-    fn init_tree_wgpu(device: &wgpu::Device, bind_group_layout_manager: &BindGroupLayoutManager, tree_models: &[M4], tree_radiuses: &[f32]) -> (usize, bool, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
+    fn init_tree_params_wgpu(device: &wgpu::Device, bind_group_layout_manager: &BindGroupLayoutManager) -> (V4, usize, bool, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
         let color = V4::new(0.65, 0.2, 0.2, 1.0);
         let resolution = 6;
         let smooth_normals = false;
 
+        let color_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[color]);
+        let resolution_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[resolution]);
+        let smooth_normals_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[usize::from(smooth_normals)]);
+
+        let qcyl_bindgroup = bind_group_layout_manager.create_qcyl_bind_group(device, None, &color_buffer, &resolution_buffer, &smooth_normals_buffer);
+
+        (color, resolution, smooth_normals, color_buffer, resolution_buffer, smooth_normals_buffer, qcyl_bindgroup)
+    }
+
+    fn init_tree_wgpu(device: &wgpu::Device, tree_models: &[M4], tree_radiuses: &[f32]) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
         let models_it = tree_models.iter().map(|cm| cm.try_inverse().unwrap().transpose()).collect::<Vec<_>>();
 
         let model_buffer = wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::VERTEX, &tree_models[..]);
@@ -367,21 +471,25 @@ impl Game {
 
         let radiuses_buffer = wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::VERTEX, &tree_radiuses[..]);
 
-        let color_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM, &[color]);
+        (model_buffer, model_it_buffer, radiuses_buffer)
+    }
+
+    fn init_leaves_params_wgpu(device: &wgpu::Device, bind_group_layout_manager: &BindGroupLayoutManager) -> (V4, usize, bool, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
+        let color = V4::new(0.15, 0.65, 0.2, 1.0);
+        let resolution = 4;
+        let smooth_normals = true;
+
+        let color_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[color]);
         let resolution_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[resolution]);
         let smooth_normals_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[usize::from(smooth_normals)]);
 
         let qcyl_bindgroup = bind_group_layout_manager.create_qcyl_bind_group(device, None, &color_buffer, &resolution_buffer, &smooth_normals_buffer);
 
-        (resolution, smooth_normals, model_buffer, model_it_buffer, radiuses_buffer, color_buffer, resolution_buffer, smooth_normals_buffer, qcyl_bindgroup)
+        (color, resolution, smooth_normals, color_buffer, resolution_buffer, smooth_normals_buffer, qcyl_bindgroup)
     }
 
     // TODO: use same buffers for tree and leaves ?
-    fn init_leaves_wgpu(device: &wgpu::Device, bind_group_layout_manager: &BindGroupLayoutManager, leaves_models: &[M4], leaves_radiuses: &[f32]) -> (usize, bool, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
-        let color = V4::new(0.15, 0.65, 0.2, 1.0);
-        let resolution = 6;
-        let smooth_normals = true;
-
+    fn init_leaves_wgpu(device: &wgpu::Device, leaves_models: &[M4], leaves_radiuses: &[f32]) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
         // TODO: dedup `init_tree_wgpu`
         let models_it = leaves_models.iter().map(|cm| cm.try_inverse().unwrap().transpose()).collect::<Vec<_>>();
 
@@ -390,13 +498,7 @@ impl Game {
 
         let radiuses_buffer = wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::VERTEX, &leaves_radiuses[..]);
 
-        let color_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM, &[color]);
-        let resolution_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[resolution]);
-        let smooth_normals_buffer =  wgpu_helpers::create_dumb_buffer_init(device, None, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, &[usize::from(smooth_normals)]);
-
-        let qcyl_bindgroup = bind_group_layout_manager.create_qcyl_bind_group(device, None, &color_buffer, &resolution_buffer, &smooth_normals_buffer);
-
-        (resolution, smooth_normals, model_buffer, model_it_buffer, radiuses_buffer, color_buffer, resolution_buffer, smooth_normals_buffer, qcyl_bindgroup)
+        (model_buffer, model_it_buffer, radiuses_buffer)
     }
 
     fn init_orbit_cube_wgpu(device: &wgpu::Device, bind_group_layout_manager: &BindGroupLayoutManager) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
@@ -465,29 +567,104 @@ impl Game {
         }
     }
 
+    pub fn mouse_event(&mut self, button: MouseButton, state: ElementState) {
+        if button == MouseButton::Left {
+            self.mouse_is_pressed = state.is_pressed();
+        }
+    }
+
+    pub fn mouse_moved_event(&mut self, position: PhysicalPosition<f64>) {
+        let mouse_pos = V2::new(position.x as f32, position.y as f32); // TODO: remove as
+
+        if self.mouse_is_pressed {
+            let delta = mouse_pos - self.mouse_last_pos;
+            self.controls.drag(V2::new(delta.x, -delta.y));
+        }
+
+        self.mouse_last_pos = mouse_pos;
+    }
+
+    pub fn mouse_scroll_event(&mut self, delta: MouseScrollDelta) {
+        if let MouseScrollDelta::LineDelta(_x, y) = delta {
+            self.controls.scroll(-y);
+        }
+    }
+
     pub fn ui(&mut self, ctx: &egui::Context) {
-        egui::Window::new("abc").show(ctx, |ui| {
+        egui::Window::new("stromy").show(ctx, |ui| {
             let avg_dt = self.timing_stats.dt.get_average_f32();
 
             ui.label(format!("FPS : {:.0} ms", 1000.0 / avg_dt));
             ui.label(format!("frame delta : {:.0} ms", avg_dt));
             ui.label(format!("surface wait : {:.0} ms", self.timing_stats.surface_texture_wait.get_average_f32()));
 
-            self.tree_smooth_normals_needs_update |= ui
-                .checkbox(&mut self.tree_smooth_normals, "smooth normals")
-                .changed();
+            egui::CollapsingHeader::new("Tree Settings")
+                .default_open(true)
+                .show(ui, |ui| {
+                    self.tree_smooth_normals_needs_update |= ui
+                        .checkbox(&mut self.tree_smooth_normals, "Smooth normals")
+                        .changed();
+        
+                    self.tree_resolution_needs_update |= ui
+                        .add(
+                            egui::Slider::new(&mut self.tree_resolution, 4..=32)
+                            .text("Resolution")
+                            .step_by(2.0)
+                        )
+                        .changed();
+        
+                    self.tree_color_needs_update = ui
+                        .color_edit_button_rgba_unmultiplied(self.tree_color.as_mut())
+                        .changed();
+                });
 
-            self.tree_resolution_needs_update |= ui
-                .add(
-                    egui::Slider::new(&mut self.tree_resolution, 4..=32)
-                    .text("resolution")
-                    .step_by(2.0)
-                )
-                .changed();
+            egui::CollapsingHeader::new("Leaves Settings")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.checkbox(&mut self.show_leaves, "Show");
+
+                    self.leaves_smooth_normals_needs_update |= ui
+                        .checkbox(&mut self.leaves_smooth_normals, "Smooth normals")
+                        .changed();
+        
+                    self.leaves_resolution_needs_update |= ui
+                        .add(
+                            egui::Slider::new(&mut self.leaves_resolution, 2..=8)
+                            .text("Leaves Resolution")
+                        )
+                        .changed();
+        
+                    self.leaves_color_needs_update = ui
+                        .color_edit_button_rgba_unmultiplied(self.leaves_color.as_mut())
+                        .changed();
+                });
+
+            egui::CollapsingHeader::new("Reload L-System")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.text_edit_singleline(&mut self.lsystem_file_path);
+
+                    ui.add(
+                        egui::Slider::new(&mut self.lsystem_iterations, 1..=10)
+                            .text("Iterations")
+                    );
+
+                    self.to_reload_l_system |= ui
+                        .button("Reload grammar file")
+                        .clicked();
+        
+                    self.to_reload_tree = ui
+                        .button("Regenerate tree")
+                        .clicked();
+        
+                    self.to_reload_leaves = ui
+                        .button("Regenerate leaves")
+                        .clicked();
+                });
         });
     }
 
-    pub fn update(&mut self, queue: &wgpu::Queue, t: u128, dt: u128, surface_texture_wait: u128) {
+    pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, t: u128, dt: u128, surface_texture_wait: u128) {
         let _t = t as f32;
         let dt_f = dt as f32;
         let dt_s = dt_f / 1000.0;
@@ -519,6 +696,41 @@ impl Game {
             self.tree_smooth_normals_needs_update = false;
         }
 
+        if self.tree_color_needs_update {
+            queue.write_buffer(&self.tree_color_buffer, 0, bytemuck::cast_slice(&[self.tree_color]));
+            self.tree_color_needs_update = false;
+        }
+
+        if self.leaves_resolution_needs_update {
+            queue.write_buffer(&self.leaves_resolution_buffer, 0, bytemuck::cast_slice(&[self.leaves_resolution]));
+            self.leaves_resolution_needs_update = false;
+        }
+
+        if self.leaves_smooth_normals_needs_update {
+            queue.write_buffer(&self.leaves_smooth_normals_buffer, 0, bytemuck::cast_slice(&[u32::from(self.leaves_smooth_normals)]));
+            self.leaves_smooth_normals_needs_update = false;
+        }
+
+        if self.leaves_color_needs_update {
+            queue.write_buffer(&self.leaves_color_buffer, 0, bytemuck::cast_slice(&[self.leaves_color]));
+            self.leaves_color_needs_update = false;
+        }
+
+        if self.to_reload_l_system {
+            self.reload_l_system(device);
+            self.to_reload_l_system = false;
+        }
+
+        if self.to_reload_tree {
+            self.reload_tree(device);
+            self.to_reload_tree = false;
+        }
+
+        if self.to_reload_leaves {
+            self.reload_leaves(device);
+            self.to_reload_leaves = false;
+        }
+
         /* timing stats */
         self.timing_stats.surface_texture_wait.add(surface_texture_wait as u32);
         self.timing_stats.dt.add(dt as u32);
@@ -543,15 +755,17 @@ impl Game {
 
         render_pass_qcyl.draw(self.tree_resolution as u32, 0..(count as u32));
 
-        /* draw - tree */
-        render_pass_qcyl.set_qcyl_bind_group(&self.leaves_bindgroup);
-
-        render_pass_qcyl.set_radiuses_vertex_buffer(self.leaves_radiuses_buffer.slice(..));
-        render_pass_qcyl.set_model_vertex_buffer(self.leaves_model_buffer.slice(..), self.leaves_model_it_buffer.slice(..));
-
-        let count = self.leaves_model_buffer.size() / 64;
-
-        render_pass_qcyl.draw(self.leaves_resolution as u32, 0..(count as u32));
+        /* draw - leaves */
+        if self.show_leaves {
+            render_pass_qcyl.set_qcyl_bind_group(&self.leaves_bindgroup);
+    
+            render_pass_qcyl.set_radiuses_vertex_buffer(self.leaves_radiuses_buffer.slice(..));
+            render_pass_qcyl.set_model_vertex_buffer(self.leaves_model_buffer.slice(..), self.leaves_model_it_buffer.slice(..));
+    
+            let count = self.leaves_model_buffer.size() / 64;
+    
+            render_pass_qcyl.draw(self.leaves_resolution as u32, 0..(count as u32));
+        }
 
         /* draw - orbit cube */
         if self.controls.orbit_mode_is_orbiting() || true {

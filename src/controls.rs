@@ -10,6 +10,7 @@ mod direction;
 
 
 
+type V2 = na::Vector2<f32>;
 type V3 = na::Vector3<f32>;
 type M4 = na::Matrix4<f32>;
 
@@ -42,6 +43,7 @@ pub struct ControlsConfig {
     pub rotation_friction_acc: f32,
     pub rotation_max_vel: f32,
     pub rotation_vertical_max_pos: f32,
+    pub rotation_drag_vel: f32,
 
     pub start_pos: V3,
     pub position_go_acc: f32,
@@ -54,11 +56,13 @@ pub struct ControlsConfig {
     pub orbit_radius_max_vel: f32,
     pub orbit_radius_min: f32,
     pub orbit_radius_max: f32,
+    pub orbit_radius_scroll_vel: f32,
 }
 
 pub struct Controls {
     rotation_horizontal: Controls1D,
     rotation_vertical: Controls1D,
+    rotation_drag_vel: f32,
 
     position_horizontal: Controls1D,
     position_vertical: Controls1D,
@@ -68,6 +72,7 @@ pub struct Controls {
     orbit_mode: bool,
     orbit_mode_switch_pending: bool,
     orbit_radius: Controls1D,
+    orbit_radius_scroll_vel: f32,
 }
 
 impl Controls {
@@ -80,6 +85,7 @@ impl Controls {
                 Controls1D::builder(config.rotation_go_acc, config.rotation_friction_acc, config.rotation_max_vel)
                     .with_clamp(-config.rotation_vertical_max_pos, config.rotation_vertical_max_pos )
                     .build(),
+            rotation_drag_vel: config.rotation_drag_vel,
             position_horizontal:
                 Controls1D::builder(config.position_go_acc, config.position_friction_acc, config.position_max_vel)
                     .with_start_pos(config.start_pos.x)
@@ -100,6 +106,7 @@ impl Controls {
                     .with_clamp(config.orbit_radius_min, config.orbit_radius_max)
                     .with_start_pos(config.orbit_radius)
                     .build(),
+            orbit_radius_scroll_vel: config.orbit_radius_scroll_vel,
         }
     }
 
@@ -157,6 +164,20 @@ impl Controls {
 
     pub fn switch_orbit_mode(&mut self) {
         self.orbit_mode_switch_pending = !self.orbit_mode_switch_pending;
+    }
+
+    pub fn drag_start(&mut self) {
+        self.rotation_horizontal.stop();
+        self.rotation_vertical.stop();
+    }
+
+    pub fn drag(&mut self, delta: V2) {
+        self.rotation_horizontal.manual_move(delta.x * self.rotation_drag_vel);
+        self.rotation_vertical.manual_move(delta.y * self.rotation_drag_vel);
+    }
+
+    pub fn scroll(&mut self, delta: f32) {
+        self.orbit_radius.manual_move(delta * self.orbit_radius_scroll_vel);
     }
 
     fn get_camera_coords(&self) -> (V3, V3, V3) {
